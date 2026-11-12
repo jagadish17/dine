@@ -1,0 +1,33 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html { -webkit-tap-highlight-color: transparent; }
+  body { @apply bg-cream text-ink font-sans antialiased; font-feature-settings: 'cv11', 'ss01'; }
+  h1, h2, h3 { @apply font-display tracking-tight; font-variation-settings: 'opsz' 96; }
+  ::selection { @apply bg-ember-soft; }
+  :focus-visible { @apply outline-none ring-2 ring-ember/60 ring-offset-2 ring-offset-cream; }
+}
+
+@layer components {
+  .card { @apply bg-white rounded-3xl border border-line/70 shadow-card; }
+  .input {
+    @apply w-full rounded-xl border border-line bg-white px-4 py-3 text-[15px] text-ink placeholder:text-ink-faint
+      transition focus:border-ember/60 focus:outline-none focus:ring-4 focus:ring-ember/10;
+  }
+  .btn { @apply inline-flex items-center justify-center gap-2 rounded-full font-medium transition active:scale-[.98] disabled:opacity-50 disabled:pointer-events-none; }
+  .btn-primary { @apply btn bg-ember text-white px-5 py-3 hover:bg-ember-dark shadow-[0_6px_16px_-6px_rgba(194,84,27,.6)]; }
+  .btn-dark { @apply btn bg-ink text-cream px-5 py-3 hover:bg-black; }
+  .btn-ghost { @apply btn border border-line bg-white px-4 py-2.5 text-ink hover:border-ink/30; }
+  .btn-text { @apply btn text-ember hover:text-ember-dark px-1; }
+  .chip { @apply inline-flex items-center gap-1.5 rounded-full border px-3.5 py-1.5 text-sm transition; }
+  .eyebrow { @apply text-[11px] font-semibold uppercase tracking-[.16em] text-ink-faint; }
+  .skeleton { @apply animate-pulse bg-cream-deep rounded-xl; }
+}
+
+.fade-in { animation: fade-in .35s ease both; }
+@keyframes fade-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+.flash { animation: flash 1.2s ease; }
+@keyframes flash { 0% { background-color: #FBF0E6; } 100% { background-color: transparent; } }
+@media (prefers-reduced-motion: reduce) { .fade-in, .flash { animation: none; } }
