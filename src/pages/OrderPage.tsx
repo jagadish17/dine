@@ -1,22 +1,16 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
-import { Info, LocateFixed, MapPin, Minus, Plus, Share2, X } from 'lucide-react';
+import { Link, useLocation, useParams } from 'react-router-dom';
+import { Info, Minus, Plus, Share2, Wifi, X } from 'lucide-react';
 import { FOODS } from '../../shared/foods.js';
-import { api, type FoodsNear } from '../lib/api';
-import { getSession, saveSession } from '../lib/session';
-import { formatINR } from '../lib/costs';
-import { useGroup } from '../hooks/useGroup';
+import { foodsNear, type FoodsNear } from '../lib/places';
+import { formatINR, metaFromQuery, shareUrl } from '../lib/dinner';
+import { useDinner } from '../hooks/useDinner';
 import { ErrorNote, Logo, ToastProvider, useToast } from '../components/ui';
-import { LiveIndicator, ShareDialog } from '../components/GroupHeader';
+import ShareDialog from '../components/ShareDialog';
 import Preferences from '../components/Preferences';
 import FoodSelect from '../components/FoodSelect';
 
-type Loc = { lat: number; lng: number; label: string };
 type Row = { key: number; dish: string; qty: number }; // dish = "foodId|Dish name"
-
-const LOC_KEY = 'dinetogether:lastLocation';
-const readLoc = (): Loc | null => { try { return JSON.parse(localStorage.getItem(LOC_KEY) || 'null'); } catch { return null; } };
-const writeLoc = (l: Loc) => { try { localStorage.setItem(LOC_KEY, JSON.stringify(l)); } catch { /* ignore */ } };
 
 const dishInfo = (key: string) => {
   const [foodId, name] = key.split('|');
@@ -30,199 +24,174 @@ export default function OrderPage() {
 }
 
 function Order() {
-  const nav = useNavigate();
   const toast = useToast();
-  const code = useParams().code?.toLowerCase() ?? null;
-  const session = code ? getSession(code) : null;
-  const { snap, status, error, refresh } = useGroup(code, session?.participantId ?? null);
-  const me = snap?.participants.find((p) => p.id === session?.participantId) ?? null;
+  const code = (useParams().code || '').toLowerCase();
+  const query = new URLSearchParams(useLocation().search);
+  const linkMeta = useMemo(() => metaFromQuery(query), [query.toString()]); // eslint-disable-line react-hooks/exhaustive-deps
+  const { dinner, peers, meId, updateMe, setFoods } = useDinner(code, linkMeta);
+  const me = dinner?.people[meId];
 
-  const [localLoc, setLocalLoc] = useState<Loc | null>(readLoc);
-  const loc: Loc | null = snap?.group.location ?? localLoc;
-  const [avail, setAvail] = useState<FoodsNear | null>(null);
+  const [scanned, setScanned] = useState<FoodsNear | null>(null);
+  const avail = dinner?.foods ?? scanned;
+  const haveShared = !!dinner?.foods;
   const [availErr, setAvailErr] = useState<string | null>(null);
   const [loadingFoods, setLoadingFoods] = useState(false);
-
+  const [retry, setRetry] = useState(0);
   const [name, setName] = useState('');
   const [rows, setRows] = useState<Row[]>([{ key: 1, dish: '', qty: 1 }]);
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
   const [share, setShare] = useState(false);
   const [prefilled, setPrefilled] = useState(false);
 
-  // Load which foods are available within 12 km of the dinner area.
+  const lat = dinner?.meta.lat, lng = dinner?.meta.lng;
   useEffect(() => {
-    if (!loc) return;
+    if (lat == null || lng == null || haveShared) { setLoadingFoods(false); return; }
     let stop = false;
-    setLoadingFoods(true); setAvailErr(null);
-    api.foodsNear(loc.lat, loc.lng)
-      .then((r) => !stop && setAvail(r))
-      .catch((e) => !stop && setAvailErr(e.message))
-      .finally(() => !stop && setLoadingFoods(false));
-    return () => { stop = true; };
-  }, [loc?.lat, loc?.lng]); // eslint-disable-line react-hooks/exhaustive-deps
+    setLoadingFoods(true);
+    // Give friends' phones a few seconds to send their list first (saves searching twice).
+    const wait = setTimeout(() => {
+      foodsNear(lat, lng)
+        .then((r) => { if (stop) return; setScanned(r); setAvailErr(null); if (r.foods.length) setFoods(r); })
+        .catch((e) => {
+          if (stop) return;
+          setAvailErr(e.message);
+          retryTimer = setTimeout(() => setRetry((n) => n + 1), 30000); // try again by itself
+        })
+        .finally(() => !stop && setLoadingFoods(false));
+    }, retry === 0 ? 4000 : 0);
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    return () => { stop = true; clearTimeout(wait); clearTimeout(retryTimer); };
+  }, [lat, lng, retry, haveShared, setFoods]);
 
-  // If I already chose, prefill my name and items so I can change them.
+  // Prefill my saved choice so I can change it.
   useEffect(() => {
-    if (prefilled || !snap || !me) return;
-    setName(me.name);
-    const mine = snap.selections.filter((s) => s.participantId === me.id).map((s, i) => {
-      const item = snap.foodItems.find((f) => f.id === s.foodItemId);
-      return item?.foodId ? { key: i + 1, dish: `${item.foodId}|${item.name}`, qty: s.quantity } : null;
-    }).filter(Boolean) as Row[];
-    if (mine.length) setRows(mine);
+    if (prefilled || !dinner) return;
+    if (me) {
+      setName(me.name);
+      if (me.items.length) setRows(me.items.map((i, k) => ({ key: k + 1, dish: `${i.foodId}|${i.name}`, qty: i.qty })));
+    }
     setPrefilled(true);
-  }, [snap, me, prefilled]);
+  }, [dinner, me, prefilled]);
 
-  const availableFoods = useMemo(() => (avail?.foods ?? []).map((a) => ({ ...a, food: FOODS.find((f) => f.id === a.id)! })).filter((a) => a.food), [avail]);
+  useEffect(() => { if (dinner) document.title = `${dinner.meta.name} · DineTogether`; }, [dinner]);
+
+  // If the map services can't be reached, still let people choose: show every food (count -1 =
+  // "not checked") and say so clearly, while retrying in the background.
+  const fallback = !avail && !!availErr;
+  const groups = useMemo(() => (avail
+    ? avail.foods.map((a) => ({ ...a, food: FOODS.find((f) => f.id === a.id)! })).filter((a) => a.food)
+    : fallback ? FOODS.map((food) => ({ id: food.id, count: -1, nearest: [] as { name: string; distanceKm: number }[], food })) : []), [avail, fallback]);
   const lines = rows.map((r) => ({ ...r, info: dishInfo(r.dish) }));
   const total = lines.reduce((t, l) => t + (l.info ? l.info.dish.price * l.qty : 0), 0);
-  const ready = name.trim() && lines.some((l) => l.info);
+  const nameTaken = !!dinner && Object.values(dinner.people).some((p) => p.id !== meId && !p.left && p.name.trim().toLowerCase() === name.trim().toLowerCase());
+  const ready = name.trim() && !nameTaken && lines.some((l) => l.info);
 
-  async function submit(e: FormEvent) {
+  function submit(e: FormEvent) {
     e.preventDefault();
-    setBusy(true); setErr(null);
-    try {
-      const items = lines.filter((l) => l.info).map((l) => ({ name: l.info!.dish.name, price: l.info!.dish.price, qty: l.qty, foodId: l.info!.food.id }));
-      const r = await api.submit({ code: code ?? undefined, name, items, location: snap?.group.location ? null : loc });
-      if (r.token) saveSession(r.code, { participantId: r.participantId, token: r.token, groupName: r.groupName });
-      toast(me ? 'Your choice is updated' : 'Added! Now invite your friends');
-      if (r.code !== code) nav(`/g/${r.code}`); else refresh();
-    } catch (x) { setErr((x as Error).message); }
-    finally { setBusy(false); }
+    if (!ready) return;
+    const merged = new Map<string, { foodId: string; name: string; price: number; qty: number }>();
+    for (const l of lines) if (l.info) {
+      const k = `${l.info.food.id}|${l.info.dish.name}`;
+      const prev = merged.get(k);
+      merged.set(k, { foodId: l.info.food.id, name: l.info.dish.name, price: l.info.dish.price, qty: (prev?.qty ?? 0) + l.qty });
+    }
+    updateMe({ name: name.trim().slice(0, 40), items: [...merged.values()] });
+    toast(me ? 'Your choice is updated' : 'Added! Now invite your friends');
   }
 
-  if (error) return <div className="mx-auto max-w-md px-5 py-20"><ErrorNote>{error}</ErrorNote><button className="btn-ghost mt-4" onClick={() => nav('/')}>Start a new dinner</button></div>;
+  if (!dinner) {
+    return (
+      <div className="flex min-h-screen flex-col items-center justify-center px-6 text-center">
+        <Logo />
+        <p className="mt-8 font-display text-2xl">Connecting to your dinner…</p>
+        <p className="mt-2 max-w-sm text-sm text-ink-soft">Waiting for someone in the group to be online. If this takes long, ask for the full invite link (it includes the dinner name and area).</p>
+        <span className="mt-6 inline-block h-5 w-5 animate-spin rounded-full border-2 border-ember border-t-transparent" />
+        <Link to="/" className="btn-ghost mt-8">Start a new dinner instead</Link>
+      </div>
+    );
+  }
+
+  const link = shareUrl(dinner);
 
   return (
     <div className="min-h-screen pb-16">
       <header className="sticky top-0 z-40 border-b border-line/80 bg-cream/90 backdrop-blur">
         <div className="mx-auto flex h-16 max-w-6xl items-center gap-3 px-4 sm:px-6">
-          <Logo />
+          <Link to="/" aria-label="Start a new dinner"><Logo /></Link>
           <div className="flex-1" />
-          {snap && <LiveIndicator status={status} />}
-          {snap && <button className="btn-dark px-3.5 py-2 text-sm" onClick={() => setShare(true)} aria-label="Invite friends"><Share2 className="h-4 w-4" /><span className="hidden sm:inline">Invite</span></button>}
+          <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium ${peers ? 'bg-[#E6F0E9] text-leaf' : 'bg-cream-deep text-ink-soft'}`} title="People with this dinner open right now">
+            <Wifi className="h-3.5 w-3.5" />{peers ? `${peers + 1} online` : 'Only you online'}
+          </span>
+          <button className="btn-dark px-3.5 py-2 text-sm" onClick={() => setShare(true)} aria-label="Invite friends"><Share2 className="h-4 w-4" /><span className="hidden sm:inline">Invite</span></button>
         </div>
-        {snap && share && <ShareDialog code={snap.group.inviteCode} name={snap.group.name} onClose={() => setShare(false)} />}
       </header>
+      {share && <ShareDialog link={link} name={dinner.meta.name} onClose={() => setShare(false)} />}
 
       <main className="mx-auto grid max-w-6xl gap-8 px-4 pt-8 sm:px-6 lg:grid-cols-[minmax(0,1fr)_380px]">
         <section className="min-w-0">
-          {snap && <p className="eyebrow mb-2 text-ember">{snap.group.name}</p>}
+          <p className="eyebrow mb-2 text-ember">{dinner.meta.name}</p>
           <h1 className="text-4xl font-medium leading-tight sm:text-5xl">What are you <em className="font-normal text-ember">eating tonight?</em></h1>
 
-          {!loc ? (
-            <LocationPicker onSet={(l) => { writeLoc(l); setLocalLoc(l); }} />
-          ) : (
-            <form onSubmit={submit} className="card mt-6 space-y-5 p-5 sm:p-6">
-              <label className="block">
-                <span className="mb-1.5 block text-sm font-medium">Your name</span>
-                <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Jagadish" maxLength={40} autoComplete="given-name" />
-              </label>
+          <form onSubmit={submit} className="card mt-6 space-y-5 p-5 sm:p-6">
+            <label className="block">
+              <span className="mb-1.5 block text-sm font-medium">Your name</span>
+              <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Jagadish" maxLength={40} autoComplete="given-name" />
+              {nameTaken && <span className="mt-1.5 block text-xs text-[#A3341A]">Someone in this dinner already uses that name. Add an initial, e.g. “{name.trim()} K”.</span>}
+            </label>
 
-              <div>
-                <span className="mb-1.5 block text-sm font-medium">Food</span>
-                {/* Note above the dropdown: where the list comes from */}
-                <div className="mb-3 flex items-start gap-2.5 rounded-xl bg-ember-tint px-3.5 py-2.5 text-[13px] leading-snug text-[#7A3410]">
-                  <Info className="mt-0.5 h-4 w-4 shrink-0" />
-                  <span>
-                    Only foods available <b>within {avail?.radiusKm ?? 12} km</b> of <b>{loc.label.split(',')[0]}</b> are listed
-                    {avail ? <> — from {avail.restaurantCount} nearby restaurants (OpenStreetMap).</> : '.'} Prices are approximate.
-                    {!snap?.group.location && <button type="button" className="ml-1 font-medium underline" onClick={() => { setLocalLoc(null); setAvail(null); }}>Change area</button>}
-                  </span>
-                </div>
-
-                {loadingFoods && <div className="rounded-xl border border-dashed border-line bg-cream/60 px-4 py-4 text-sm text-ink-soft"><span className="mr-2 inline-block h-3 w-3 animate-spin rounded-full border-2 border-ember border-t-transparent align-middle" />Checking restaurants within 12 km… (the first time can take up to 30 seconds)</div>}
-                {availErr && <ErrorNote onRetry={() => setLocalLoc(loc && { ...loc })}>{availErr}</ErrorNote>}
-                {avail && availableFoods.length === 0 && <ErrorNote>No restaurants with these foods were found within 12 km.</ErrorNote>}
-
-                {avail && availableFoods.length > 0 && (
-                  <div className="space-y-3">
-                    {lines.map((row, i) => (
-                      <div key={row.key}>
-                        <div className="flex items-center gap-2">
-                          <FoodSelect groups={availableFoods} value={row.dish} radiusKm={avail.radiusKm}
-                            onChange={(v) => setRows((rs) => rs.map((r) => (r.key === row.key ? { ...r, dish: v } : r)))} />
-                          <div className="inline-flex h-[52px] shrink-0 items-center rounded-2xl border border-line bg-white px-1" role="group" aria-label="Quantity">
-                            <button type="button" className="grid h-9 w-9 place-items-center rounded-full hover:bg-cream" onClick={() => setRows((rs) => rs.map((r) => (r.key === row.key ? { ...r, qty: Math.max(1, r.qty - 1) } : r)))} aria-label="Less"><Minus className="h-4 w-4" /></button>
-                            <span className="w-6 text-center font-semibold tabular-nums">{row.qty}</span>
-                            <button type="button" className="grid h-9 w-9 place-items-center rounded-full hover:bg-cream" onClick={() => setRows((rs) => rs.map((r) => (r.key === row.key ? { ...r, qty: Math.min(50, r.qty + 1) } : r)))} aria-label="More"><Plus className="h-4 w-4" /></button>
-                          </div>
-                          {rows.length > 1 && <button type="button" className="rounded-full p-2 text-ink-faint hover:bg-cream hover:text-[#A3341A]" onClick={() => setRows((rs) => rs.filter((r) => r.key !== row.key))} aria-label="Remove"><X className="h-4 w-4" /></button>}
-                        </div>
-                        {row.info && (
-                          <p className="mt-1.5 pl-1 text-xs text-ink-faint">
-                            {row.qty} × ~{formatINR(row.info.dish.price)} = <b className="text-ink-soft">{formatINR(row.info.dish.price * row.qty)}</b>
-                            {(() => { const a = availableFoods.find((x) => x.id === row.info!.food.id); return a?.nearest.length ? ` · nearby: ${a.nearest.map((n) => `${n.name} (${n.distanceKm.toFixed(1)} km)`).join(', ')}` : ''; })()}
-                          </p>
-                        )}
-                        {i === lines.length - 1 && rows.length < 10 && (
-                          <button type="button" className="btn-text mt-2 text-sm" onClick={() => setRows((rs) => [...rs, { key: Math.max(...rs.map((r) => r.key)) + 1, dish: '', qty: 1 }])}><Plus className="h-4 w-4" />Add another food</button>
-                        )}
-                      </div>
-                    ))}
-                  </div>
+            <div>
+              <span className="mb-1.5 block text-sm font-medium">Food</span>
+              <div className="mb-3 flex items-start gap-2.5 rounded-xl bg-ember-tint px-3.5 py-2.5 text-[13px] leading-snug text-[#7A3410]">
+                <Info className="mt-0.5 h-4 w-4 shrink-0" />
+                {fallback ? (
+                  <span>Couldn’t check restaurants near <b>{dinner.meta.area.split(',')[0]}</b> right now (the free map service is busy), so <b>all foods</b> are shown. It retries by itself, and the list narrows to foods <b>within 12 km</b> once it gets through. Prices are approximate.</span>
+                ) : (
+                  <span>Only foods available <b>within 12 km</b> of <b>{dinner.meta.area.split(',')[0]}</b> are listed{avail ? <> — from {avail.restaurantCount} nearby restaurants (OpenStreetMap).</> : '.'} Prices are approximate.</span>
                 )}
               </div>
 
-              {err && <ErrorNote>{err}</ErrorNote>}
-              <button className="btn-primary w-full justify-between px-6 py-4 text-base" disabled={busy || !ready}>
-                <span>{busy ? 'Submitting…' : me ? 'Update my choice' : 'Submit'}</span>
-                <span className="tabular-nums">{total > 0 && `~${formatINR(total)}`}</span>
-              </button>
-            </form>
-          )}
+              {loadingFoods && groups.length === 0 && <div className="rounded-xl border border-dashed border-line bg-cream/60 px-4 py-4 text-sm text-ink-soft"><span className="mr-2 inline-block h-3 w-3 animate-spin rounded-full border-2 border-ember border-t-transparent align-middle" />Checking restaurants within 12 km… (the first time can take up to a minute)</div>}
+              {availErr && !fallback && <ErrorNote onRetry={() => setRetry((n) => n + 1)}>{availErr}</ErrorNote>}
+              {avail && !fallback && groups.length === 0 && <ErrorNote>No restaurants with these foods were found within 12 km.</ErrorNote>}
+
+              {groups.length > 0 && (
+                <div className="space-y-3">
+                  {lines.map((row, i) => (
+                    <div key={row.key}>
+                      <div className="flex items-center gap-2">
+                        <FoodSelect groups={groups} value={row.dish} radiusKm={avail?.radiusKm ?? 12} onChange={(v) => setRows((rs) => rs.map((r) => (r.key === row.key ? { ...r, dish: v } : r)))} />
+                        <div className="inline-flex h-[52px] shrink-0 items-center rounded-2xl border border-line bg-white px-1" role="group" aria-label="Quantity">
+                          <button type="button" className="grid h-9 w-9 place-items-center rounded-full hover:bg-cream" onClick={() => setRows((rs) => rs.map((r) => (r.key === row.key ? { ...r, qty: Math.max(1, r.qty - 1) } : r)))} aria-label="Less"><Minus className="h-4 w-4" /></button>
+                          <span className="w-6 text-center font-semibold tabular-nums">{row.qty}</span>
+                          <button type="button" className="grid h-9 w-9 place-items-center rounded-full hover:bg-cream" onClick={() => setRows((rs) => rs.map((r) => (r.key === row.key ? { ...r, qty: Math.min(50, r.qty + 1) } : r)))} aria-label="More"><Plus className="h-4 w-4" /></button>
+                        </div>
+                        {rows.length > 1 && <button type="button" className="rounded-full p-2 text-ink-faint hover:bg-cream hover:text-[#A3341A]" onClick={() => setRows((rs) => rs.filter((r) => r.key !== row.key))} aria-label="Remove"><X className="h-4 w-4" /></button>}
+                      </div>
+                      {row.info && (
+                        <p className="mt-1.5 pl-1 text-xs text-ink-faint">
+                          {row.qty} × ~{formatINR(row.info.dish.price)} = <b className="text-ink-soft">{formatINR(row.info.dish.price * row.qty)}</b>
+                          {(() => { const a = groups.find((x) => x.id === row.info!.food.id); return a?.nearest.length ? ` · nearby: ${a.nearest.map((n) => `${n.name} (${n.distanceKm} km)`).join(', ')}` : ''; })()}
+                        </p>
+                      )}
+                      {i === lines.length - 1 && rows.length < 10 && (
+                        <button type="button" className="btn-text mt-2 text-sm" onClick={() => setRows((rs) => [...rs, { key: Math.max(...rs.map((r) => r.key)) + 1, dish: '', qty: 1 }])}><Plus className="h-4 w-4" />Add another food</button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <button className="btn-primary w-full justify-between px-6 py-4 text-base" disabled={!ready}>
+              <span>{me ? 'Update my choice' : 'Submit'}</span>
+              <span className="tabular-nums">{total > 0 && `~${formatINR(total)}`}</span>
+            </button>
+          </form>
         </section>
 
         <aside className="lg:sticky lg:top-24 lg:self-start">
-          <Preferences snap={snap} meId={me?.id ?? null} onInvite={() => setShare(true)} />
+          <Preferences dinner={dinner} meId={meId} onInvite={() => setShare(true)} />
         </aside>
       </main>
-    </div>
-  );
-}
-
-function LocationPicker({ onSet }: { onSet: (l: Loc) => void }) {
-  const [q, setQ] = useState('');
-  const [found, setFound] = useState<Loc[] | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-
-  function useMine() {
-    setErr(null);
-    if (!window.isSecureContext || !navigator.geolocation) { setErr('Location only works on secure pages here. Type your area instead.'); return; }
-    setBusy(true);
-    navigator.geolocation.getCurrentPosition(
-      (p) => { setBusy(false); onSet({ lat: p.coords.latitude, lng: p.coords.longitude, label: 'My location' }); },
-      () => { setBusy(false); setErr('Location permission denied. Type your area instead.'); },
-      { timeout: 12000, maximumAge: 300000 },
-    );
-  }
-  async function search(e: FormEvent) {
-    e.preventDefault(); setBusy(true); setErr(null);
-    try { const r = await api.geocode(q); setFound(r.results); if (!r.results.length) setErr(`Couldn’t find “${q}”.`); }
-    catch (x) { setErr((x as Error).message); } finally { setBusy(false); }
-  }
-
-  return (
-    <div className="card mt-6 p-5">
-      <p className="font-medium">First, where’s dinner?</p>
-      <p className="mt-0.5 text-sm text-ink-soft">We’ll list the foods available within 12 km.</p>
-      <div className="mt-4 flex flex-col gap-3 sm:flex-row">
-        <button className="btn-dark shrink-0" onClick={useMine} disabled={busy}><LocateFixed className="h-4 w-4" />Use my location</button>
-        <form onSubmit={search} className="flex flex-1 gap-2">
-          <input className="input" value={q} onChange={(e) => setQ(e.target.value)} placeholder="or type area, e.g. T Nagar, Chennai" aria-label="Area" />
-          <button className="btn-ghost shrink-0" disabled={busy || q.trim().length < 2}>Search</button>
-        </form>
-      </div>
-      {err && <div className="mt-3"><ErrorNote>{err}</ErrorNote></div>}
-      {found && found.length > 0 && (
-        <ul className="mt-3 divide-y divide-line overflow-hidden rounded-2xl border border-line">
-          {found.map((f) => (
-            <li key={`${f.lat},${f.lng}`}><button className="flex w-full items-start gap-3 bg-white px-4 py-3 text-left text-sm hover:bg-cream" onClick={() => onSet({ ...f, label: f.label.split(',').slice(0, 3).join(',') })}><MapPin className="mt-0.5 h-4 w-4 shrink-0 text-ember" /><span className="line-clamp-2">{f.label}</span></button></li>
-          ))}
-        </ul>
-      )}
     </div>
   );
 }

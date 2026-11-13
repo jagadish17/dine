@@ -77,7 +77,7 @@ export default function FoodSelect({ groups, value, onChange, radiusKm }: { grou
               <input ref={search} value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={onKey} placeholder="Search biryani, dosa, parotta…"
                 className="w-full rounded-xl bg-cream py-2.5 pl-9 pr-3 text-sm outline-none placeholder:text-ink-faint focus:bg-cream-deep" aria-label="Search foods" />
             </div>
-            <p className="mt-2 flex items-center gap-1.5 px-1 text-[11px] text-ink-faint"><MapPin className="h-3 w-3 text-ember" />Foods served by restaurants within {radiusKm} km · prices approx.</p>
+            <p className="mt-2 flex items-center gap-1.5 px-1 text-[11px] text-ink-faint"><MapPin className="h-3 w-3 text-ember" />{groups.some((g) => g.count < 0) ? 'All foods (nearby check pending)' : `Foods served by restaurants within ${radiusKm} km`} · prices approx.</p>
           </div>
           <div ref={list} id={id} role="listbox" className="max-h-[min(60vh,380px)] overflow-y-auto overscroll-contain py-1.5">
             {filtered.length === 0 && <p className="px-4 py-6 text-center text-sm text-ink-faint">No food matches “{q}”</p>}
@@ -86,7 +86,7 @@ export default function FoodSelect({ groups, value, onChange, radiusKm }: { grou
                 <div className="sticky top-0 z-10 flex items-center gap-2 bg-white/95 px-4 pb-1.5 pt-3 backdrop-blur">
                   <span className="text-base" aria-hidden>{g.food.emoji}</span>
                   <span className="font-display text-[15px] font-medium">{g.food.label}</span>
-                  <span className="ml-auto rounded-full bg-cream px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-ink-soft">{g.count} {g.count === 1 ? 'place' : 'places'} nearby</span>
+                  {g.count >= 0 && <span className="ml-auto rounded-full bg-cream px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-ink-soft">{g.count} {g.count === 1 ? 'place' : 'places'} nearby</span>}
                 </div>
                 {g.dishes.map((d) => {
                   i += 1;
