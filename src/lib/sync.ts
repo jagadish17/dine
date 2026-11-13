@@ -69,10 +69,11 @@ async function decrypt(code: string, content: string): Promise<any | null> {
   } catch { return null; } // not ours / tampered
 }
 
-export type Incoming = { type: 'person'; pubkey: string; data: any } | { type: 'foods'; data: any };
+export type Slot = 'person' | 'foods' | 'meta';
+export type Incoming = { type: 'person'; pubkey: string; data: any } | { type: 'foods'; data: any } | { type: 'meta'; data: any; createdAt: number };
 
 /** Save one record (my choice, or the foods list). Resolves true once at least one relay stored it. */
-export async function save(code: string, slot: 'person' | 'foods', data: unknown): Promise<boolean> {
+export async function save(code: string, slot: Slot, data: unknown): Promise<boolean> {
   const { topic } = await dinnerKeys(code);
   const { sk } = deviceKey();
   const event = finalizeEvent({
@@ -93,6 +94,7 @@ export async function listen(code: string, onData: (msg: Incoming) => void, onLo
     if (!msg || typeof msg !== 'object') return;
     if (msg.slot === 'person' && ev.tags.some((t) => t[0] === 'd' && t[1] === `${topic}:person`)) onData({ type: 'person', pubkey: ev.pubkey, data: msg.data });
     if (msg.slot === 'foods') onData({ type: 'foods', data: msg.data });
+    if (msg.slot === 'meta') onData({ type: 'meta', data: msg.data, createdAt: ev.created_at });
   };
   let loaded = false;
   const done = () => { if (!loaded) { loaded = true; onLoaded(); } };

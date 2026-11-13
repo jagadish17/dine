@@ -3,7 +3,7 @@ import { Link, useLocation, useParams } from 'react-router-dom';
 import { Cloud, Info, Minus, Plus, Share2, WifiOff, X } from 'lucide-react';
 import { FOODS } from '../../shared/foods.js';
 import { foodsNear, type FoodsNear } from '../lib/places';
-import { formatINR, metaFromQuery, shareUrl } from '../lib/dinner';
+import { displayCode, formatINR, metaFromQuery, shareUrl } from '../lib/dinner';
 import { useDinner } from '../hooks/useDinner';
 import { Logo, ToastProvider, useToast } from '../components/ui';
 import ShareDialog from '../components/ShareDialog';
@@ -29,11 +29,11 @@ function Order() {
   const query = new URLSearchParams(useLocation().search);
   const linkMeta = useMemo(() => metaFromQuery(query), [query.toString()]); // eslint-disable-line react-hooks/exhaustive-deps
   const { dinner, meId, status, loaded, updateMe, setFoods } = useDinner(code, linkMeta);
-  const me = dinner?.people[meId];
+  const me = dinner.people[meId];
 
   const [scanned, setScanned] = useState<FoodsNear | null>(null);
-  const avail = dinner?.foods ?? scanned;
-  const haveShared = !!dinner?.foods;
+  const avail = dinner.foods ?? scanned;
+  const haveShared = !!dinner.foods;
   const [availErr, setAvailErr] = useState<string | null>(null);
   const [retry, setRetry] = useState(0);
   const [name, setName] = useState('');
@@ -41,7 +41,7 @@ function Order() {
   const [share, setShare] = useState(false);
   const [prefilled, setPrefilled] = useState(false);
 
-  const lat = dinner?.meta.lat, lng = dinner?.meta.lng;
+  const lat = dinner.meta?.lat, lng = dinner.meta?.lng;
   // Foods show instantly (all of them). In the background we check which are within 12 km:
   // first from the dinner's saved list (found by whoever opened it first), otherwise we look it up.
   useEffect(() => {
@@ -60,7 +60,7 @@ function Order() {
 
   // Prefill my saved choice so I can change it.
   useEffect(() => {
-    if (prefilled || !dinner) return;
+    if (prefilled || !loaded && !me) return;
     if (me) {
       setName(me.name);
       if (me.items.length) setRows(me.items.map((i, k) => ({ key: k + 1, dish: `${i.foodId}|${i.name}`, qty: i.qty })));
@@ -68,7 +68,7 @@ function Order() {
     setPrefilled(true);
   }, [dinner, me, prefilled]);
 
-  useEffect(() => { if (dinner) document.title = `${dinner.meta.name} · DineTogether`; }, [dinner]);
+  useEffect(() => { if (dinner.meta) document.title = `${meta.name} · DineTogether`; }, [dinner.meta]);
 
   // Until the 12 km check is done, every food is shown (count -1 = "not checked yet"), so nobody waits.
   const fallback = !avail;
@@ -77,7 +77,7 @@ function Order() {
     : FOODS.map((food) => ({ id: food.id, count: -1, nearest: [] as { name: string; distanceKm: number }[], food }))), [avail]);
   const lines = rows.map((r) => ({ ...r, info: dishInfo(r.dish) }));
   const total = lines.reduce((t, l) => t + (l.info ? l.info.dish.price * l.qty : 0), 0);
-  const nameTaken = !!dinner && Object.values(dinner.people).some((p) => p.id !== meId && !p.left && p.name.trim().toLowerCase() === name.trim().toLowerCase());
+  const nameTaken = Object.values(dinner.people).some((p) => p.id !== meId && !p.left && p.name.trim().toLowerCase() === name.trim().toLowerCase());
   const ready = name.trim() && !nameTaken && lines.some((l) => l.info);
 
   function submit(e: FormEvent) {
@@ -93,19 +93,30 @@ function Order() {
     toast(me ? 'Your choice is updated' : 'Added! Now invite your friends');
   }
 
-  if (!dinner) {
+  if (!dinner.meta) {
+    // Joined with just a code: the dinner's name/area come from the online copy.
     return (
       <div className="flex min-h-screen flex-col items-center justify-center px-6 text-center">
         <Logo />
-        <p className="mt-8 font-display text-2xl">Connecting to your dinner…</p>
-        <p className="mt-2 max-w-sm text-sm text-ink-soft">Waiting for someone in the group to be online. If this takes long, ask for the full invite link (it includes the dinner name and area).</p>
-        <span className="mt-6 inline-block h-5 w-5 animate-spin rounded-full border-2 border-ember border-t-transparent" />
-        <Link to="/" className="btn-ghost mt-8">Start a new dinner instead</Link>
+        {!loaded ? (
+          <>
+            <p className="mt-8 font-display text-2xl">Opening dinner {displayCode(code)}…</p>
+            <span className="mt-6 inline-block h-5 w-5 animate-spin rounded-full border-2 border-ember border-t-transparent" />
+          </>
+        ) : (
+          <>
+            <p className="mt-8 font-display text-2xl">Dinner {displayCode(code)} not found</p>
+            <p className="mt-2 max-w-sm text-sm text-ink-soft">Check the code with the friend who started it, or ask them to send the dinner link again.</p>
+            <Link to="/" className="btn-primary mt-6">Enter a different code</Link>
+          </>
+        )}
       </div>
     );
   }
 
+  const meta = dinner.meta;
   const link = shareUrl(dinner);
+  const others = Object.values(dinner.people).filter((p) => p.id !== meId && p.items.length).length;
 
   return (
     <div className="min-h-screen pb-16">
@@ -121,12 +132,21 @@ function Order() {
           <button className="btn-dark px-3.5 py-2 text-sm" onClick={() => setShare(true)} aria-label="Invite friends"><Share2 className="h-4 w-4" /><span className="hidden sm:inline">Invite</span></button>
         </div>
       </header>
-      {share && <ShareDialog link={link} name={dinner.meta.name} onClose={() => setShare(false)} />}
+      {share && <ShareDialog link={link} name={meta.name} code={displayCode(code)} onClose={() => setShare(false)} />}
 
       <main className="mx-auto grid max-w-6xl gap-8 px-4 pt-8 sm:px-6 lg:grid-cols-[minmax(0,1fr)_380px]">
         <section className="min-w-0">
-          <p className="eyebrow mb-2 text-ember">{dinner.meta.name}</p>
+          <p className="eyebrow mb-2 text-ember">{meta.name}</p>
           <h1 className="text-4xl font-medium leading-tight sm:text-5xl">What are you <em className="font-normal text-ember">eating tonight?</em></h1>
+
+          {/* Make it obvious what to send: this dinner's code/link — not the homepage. */}
+          <div className={`mt-5 flex flex-wrap items-center gap-3 rounded-2xl border px-4 py-3 ${others ? 'border-line bg-white' : 'border-ember/40 bg-ember-tint'}`}>
+            <div className="min-w-0 flex-1">
+              <p className="text-[13px] text-ink-soft">{others ? 'Invite more friends with this dinner’s code' : 'Friends join with this code or link'}</p>
+              <p className="font-mono text-2xl font-semibold tracking-[.2em] text-ink">{displayCode(code)}</p>
+            </div>
+            <button type="button" className="btn-primary px-4 py-2.5 text-sm" onClick={() => setShare(true)}><Share2 className="h-4 w-4" />Share link</button>
+          </div>
 
           <form onSubmit={submit} className="card mt-6 space-y-5 p-5 sm:p-6">
             <label className="block">
@@ -142,12 +162,12 @@ function Order() {
                 {fallback ? (
                   <span>
                     {availErr
-                      ? <>Couldn’t check restaurants near <b>{dinner.meta.area.split(',')[0]}</b> yet (the free map service is busy), so <b>all foods</b> are shown. It keeps retrying by itself.</>
-                      : <><span className="mr-1.5 inline-block h-3 w-3 animate-spin rounded-full border-2 border-current border-t-transparent align-[-2px]" />Checking which foods are available <b>within 12 km</b> of <b>{dinner.meta.area.split(',')[0]}</b>… You can choose now; the list narrows when ready.</>}
+                      ? <>Couldn’t check restaurants near <b>{meta.area.split(',')[0]}</b> yet (the free map service is busy), so <b>all foods</b> are shown. It keeps retrying by itself.</>
+                      : <><span className="mr-1.5 inline-block h-3 w-3 animate-spin rounded-full border-2 border-current border-t-transparent align-[-2px]" />Checking which foods are available <b>within 12 km</b> of <b>{meta.area.split(',')[0]}</b>… You can choose now; the list narrows when ready.</>}
                     {' '}Prices are approximate.
                   </span>
                 ) : (
-                  <span>Only foods available <b>within 12 km</b> of <b>{dinner.meta.area.split(',')[0]}</b> are listed{avail ? <> — from {avail.restaurantCount} nearby restaurants (OpenStreetMap).</> : '.'} Prices are approximate.</span>
+                  <span>Only foods available <b>within 12 km</b> of <b>{meta.area.split(',')[0]}</b> are listed{avail ? <> — from {avail.restaurantCount} nearby restaurants (OpenStreetMap).</> : '.'} Prices are approximate.</span>
                 )}
               </div>
 

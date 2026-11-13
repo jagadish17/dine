@@ -6,7 +6,8 @@ export interface Person { id: string; name: string; items: Item[]; updatedAt: nu
 export interface Meta { name: string; lat: number; lng: number; area: string; createdAt: number }
 import type { FoodsNear } from './places';
 
-export interface Dinner { code: string; meta: Meta; people: Record<string, Person>; foods?: FoodsNear }
+/** meta is null until the dinner's name/area is known (from the link, this phone, or online). */
+export interface Dinner { code: string; meta: Meta | null; people: Record<string, Person>; foods?: FoodsNear }
 
 /** Merge another phone's copy into ours. Returns the same object if nothing changed. */
 export function merge(mine: Dinner, theirs: Partial<Dinner> | null | undefined): Dinner {
@@ -14,17 +15,28 @@ export function merge(mine: Dinner, theirs: Partial<Dinner> | null | undefined):
   let changed = false;
   const people = { ...mine.people };
   for (const [id, p] of Object.entries(theirs.people ?? {})) {
-    if (!isPerson(p) || p.id !== id) continue;
+    if (!isPerson(p) || p.id !== id || !isOwnerId(id)) continue;
     if (!people[id] || p.updatedAt > people[id].updatedAt) { people[id] = sanitize(p); changed = true; }
   }
   // The first phone to look up nearby foods shares the list, so others don't search again.
   const foods = !mine.foods && isFoods(theirs.foods) ? theirs.foods : mine.foods;
   if (foods !== mine.foods) changed = true;
-  return changed ? { ...mine, people, foods } : mine;
+  // Name/area: keep what we already have (from the link or this phone); otherwise take it.
+  const meta = !mine.meta && isMeta(theirs.meta) ? theirs.meta : mine.meta;
+  if (meta !== mine.meta) changed = true;
+  return changed ? { ...mine, people, foods, meta } : mine;
 }
 
 function isFoods(f: any): f is FoodsNear {
   return f && typeof f.restaurantCount === 'number' && Array.isArray(f.foods) && f.foods.every((x: any) => typeof x.id === 'string' && typeof x.count === 'number' && Array.isArray(x.nearest));
+}
+
+/** Entries are keyed by the device's public signing key (64 hex chars). Older app versions used
+ *  random ids that were never saved online; those are ignored so they can't block names. */
+export const isOwnerId = (id: string) => /^[0-9a-f]{64}$/.test(id);
+
+export function isMeta(m: any): m is Meta {
+  return m && typeof m.name === 'string' && typeof m.area === 'string' && Number.isFinite(m.lat) && Number.isFinite(m.lng) && Math.abs(m.lat) <= 90 && Math.abs(m.lng) <= 180;
 }
 
 function isPerson(p: any): p is Person {
@@ -77,10 +89,24 @@ export function summarize(d: Dinner): Summary {
 
 export const formatINR = (n: number) => new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 2, minimumFractionDigits: 0 }).format(n);
 
-// ---- links: the dinner's name and area travel inside the link itself ----
+// ---- links & codes ----
+// The dinner's name/area are saved online, so the short code alone is enough to join.
+// The link also carries them as a backup, in case the online copy can't be reached.
 export function shareUrl(d: Dinner) {
+  const base = `${location.origin}${location.pathname}#/g/${d.code}`;
+  if (!d.meta) return base;
   const q = new URLSearchParams({ n: d.meta.name, a: d.meta.area, lat: d.meta.lat.toFixed(5), lng: d.meta.lng.toFixed(5), t: String(d.meta.createdAt) });
-  return `${location.origin}${location.pathname}#/g/${d.code}?${q}`;
+  return `${base}?${q}`;
+}
+export const displayCode = (code: string) => code.toUpperCase();
+
+/** Accepts a dinner link or a typed code ("K7M2QX", "k7m2qx", "…/#/g/k7m2qx?…"). */
+export function parseJoin(input: string): { code: string; query: string } | null {
+  const s = input.trim();
+  const m = s.match(/#\/g\/([a-z0-9]{4,16})(\?\S*)?/i);
+  if (m) return { code: m[1].toLowerCase(), query: m[2] || '' };
+  const c = s.replace(/[\s-]/g, '');
+  return /^[a-z0-9]{4,16}$/i.test(c) ? { code: c.toLowerCase(), query: '' } : null;
 }
 export function metaFromQuery(q: URLSearchParams): Meta | null {
   const lat = Number(q.get('lat')), lng = Number(q.get('lng'));
@@ -89,5 +115,6 @@ export function metaFromQuery(q: URLSearchParams): Meta | null {
 }
 
 const CODE_CHARS = 'abcdefghjkmnpqrstuvwxyz23456789';
-export const newCode = () => Array.from(crypto.getRandomValues(new Uint8Array(10)), (b) => CODE_CHARS[b % CODE_CHARS.length]).join('');
+/** 6 characters, no look-alikes (0/o, 1/l/i): easy to read out or type. ~890 million combinations. */
+export const newCode = () => Array.from(crypto.getRandomValues(new Uint8Array(6)), (b) => CODE_CHARS[b % CODE_CHARS.length]).join('');
 export const newId = () => crypto.randomUUID();

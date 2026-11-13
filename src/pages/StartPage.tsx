@@ -1,8 +1,9 @@
 import { useState, type FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowRight, LocateFixed, MapPin } from 'lucide-react';
+import { ArrowRight, LocateFixed, LogIn, MapPin, Plus } from 'lucide-react';
 import { geocode, reverseGeocode } from '../lib/places';
-import { newCode, shareUrl, type Meta } from '../lib/dinner';
+import { displayCode, newCode, parseJoin, shareUrl, type Meta } from '../lib/dinner';
+import { recentDinners } from '../hooks/useDinner';
 import { ErrorNote, Logo } from '../components/ui';
 
 type Loc = { lat: number; lng: number; label: string };
@@ -16,6 +17,16 @@ export default function StartPage() {
   const [found, setFound] = useState<Loc[] | null>(null);
   const [busy, setBusy] = useState<'geo' | 'search' | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [joinText, setJoinText] = useState('');
+  const [joinErr, setJoinErr] = useState<string | null>(null);
+  const recent = recentDinners();
+
+  function join(e: FormEvent) {
+    e.preventDefault();
+    const j = parseJoin(joinText);
+    if (!j) { setJoinErr('Enter the 6-letter dinner code (e.g. K7M2QX) or paste the dinner link.'); return; }
+    nav(`/g/${j.code}${j.query}`);
+  }
 
   function useMine() {
     setErr(null);
@@ -46,9 +57,36 @@ export default function StartPage() {
       <main className="mx-auto max-w-xl px-5 pb-20 pt-6">
         <p className="eyebrow mb-3 text-ember">Group dinner, sorted</p>
         <h1 className="text-[42px] font-medium leading-[1.05] sm:text-5xl">Tonight, let’s eat <em className="font-normal text-ember">something great.</em></h1>
-        <p className="mt-3 text-[17px] text-ink-soft">Start a dinner, share the link, and see what everyone wants — live.</p>
+        <p className="mt-3 text-[17px] text-ink-soft">Start a dinner, share the code, and see what everyone wants — live.</p>
 
-        <div className="card mt-8 space-y-5 p-6">
+        {/* Friends usually land here: joining the right dinner comes first. */}
+        <form onSubmit={join} className="card mt-8 p-6">
+          <p className="flex items-center gap-2 font-medium"><LogIn className="h-4 w-4 text-ember" />Join a friend’s dinner</p>
+          <p className="mt-0.5 text-sm text-ink-soft">Enter the code your friend shared, or paste their dinner link.</p>
+          <div className="mt-3 flex gap-2">
+            <input className="input font-mono uppercase tracking-[.15em] placeholder:font-sans placeholder:normal-case placeholder:tracking-normal" value={joinText}
+              onChange={(e) => { setJoinText(e.target.value); setJoinErr(null); }} placeholder="Code, e.g. K7M2QX" aria-label="Dinner code or link" autoCapitalize="characters" />
+            <button className="btn-primary shrink-0" disabled={!joinText.trim()}>Join</button>
+          </div>
+          {joinErr && <p className="mt-2 text-xs text-[#A3341A]">{joinErr}</p>}
+        </form>
+
+        {recent.length > 0 && (
+          <div className="mt-6">
+            <p className="eyebrow mb-2">Your dinners</p>
+            <div className="space-y-2">
+              {recent.map((r) => (
+                <button key={r.code} onClick={() => nav(`/g/${r.code}`)} className="flex w-full items-center gap-3 rounded-2xl border border-line bg-white px-4 py-3 text-left hover:border-ink/30">
+                  <span className="min-w-0 flex-1"><span className="block truncate font-medium">{r.name}</span><span className="block truncate text-xs text-ink-faint">{r.area} · code {displayCode(r.code)}</span></span>
+                  <ArrowRight className="h-4 w-4 shrink-0 text-ink-faint" />
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <div className="card mt-6 space-y-5 p-6">
+          <p className="flex items-center gap-2 font-medium"><Plus className="h-4 w-4 text-ember" />Start a new dinner</p>
           <label className="block">
             <span className="mb-1.5 block text-sm font-medium">Dinner name</span>
             <input className="input" value={name} onChange={(e) => setName(e.target.value)} maxLength={60} />
@@ -83,7 +121,7 @@ export default function StartPage() {
             {err && <div className="mt-3"><ErrorNote>{err}</ErrorNote></div>}
           </div>
 
-          <button className="btn-primary w-full py-3.5" onClick={start} disabled={!loc}>Start dinner <ArrowRight className="h-4 w-4" /></button>
+          <button className="btn-dark w-full py-3.5" onClick={start} disabled={!loc}>Start dinner <ArrowRight className="h-4 w-4" /></button>
           <p className="text-center text-xs text-ink-faint">You’ll get a link to share. Foods are listed from restaurants within 12 km of this area.</p>
         </div>
       </main>
