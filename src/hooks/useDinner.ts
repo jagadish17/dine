@@ -1,81 +1,94 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { joinRoom, type Room } from 'trystero/nostr';
-import { merge, newId, type Dinner, type Meta, type Person } from '../lib/dinner';
+import { merge, type Dinner, type Meta, type Person } from '../lib/dinner';
+import { deviceKey, listen, save } from '../lib/sync';
 
-// Phones in the same dinner find each other through free public Nostr relays, then talk
-// directly (WebRTC). Messages are encrypted with the dinner code, which only people with the
-// link know. Every phone also keeps a copy in localStorage, so a refresh never loses data.
-const APP_ID = 'dinetogether-jagadish17-v1';
-// Large, long-running public relays (checked reachable). Every phone uses the same list, so they
-// always meet on the same relays; one or two being down doesn't matter.
-const RELAYS = ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.primal.net', 'wss://purplerelay.com', 'wss://nostr.data.haus', 'wss://relay.mostro.network'];
+// Everyone's choices are saved online (encrypted, on public Nostr relays — see lib/sync.ts), so a
+// friend who opens the link later still sees them. This phone also keeps a copy in localStorage,
+// so the page shows instantly and works offline; changes made offline are sent once back online.
+export type SaveStatus = 'loading' | 'saved' | 'saving' | 'offline';
+
 const KEY = (code: string) => `dinetogether:dinner:${code}`;
-const ME_KEY = (code: string) => `dinetogether:me:${code}`;
-
 const load = (code: string): Dinner | null => { try { return JSON.parse(localStorage.getItem(KEY(code)) || 'null'); } catch { return null; } };
-const save = (d: Dinner) => { try { localStorage.setItem(KEY(d.code), JSON.stringify(d)); } catch { /* ignore */ } };
-
-export function myId(code: string) {
-  try {
-    let id = localStorage.getItem(ME_KEY(code));
-    if (!id) { id = newId(); localStorage.setItem(ME_KEY(code), id); }
-    return id;
-  } catch { return newId(); }
-}
+const keep = (d: Dinner) => { try { localStorage.setItem(KEY(d.code), JSON.stringify(d)); } catch { /* ignore */ } };
 
 export function useDinner(code: string, metaFromLink: Meta | null) {
+  const meId = deviceKey().pubkey; // my identity = this device's signing key
   const [dinner, setDinner] = useState<Dinner | null>(() => {
     const saved = load(code);
-    if (saved) return saved;
+    if (saved) return metaFromLink && !saved.meta ? { ...saved, meta: metaFromLink } : saved;
     return metaFromLink ? { code, meta: metaFromLink, people: {} } : null;
   });
-  const [peers, setPeers] = useState(0);
-  const room = useRef<Room | null>(null);
-  const sendRef = useRef<(d: Dinner, target?: string) => void>(() => {});
+  const [status, setStatus] = useState<SaveStatus>('loading');
+  const [loaded, setLoaded] = useState(false);
   const latest = useRef(dinner);
   latest.current = dinner;
-  const meId = myId(code);
+  const remoteMine = useRef(0); // updatedAt of my entry as stored online
+  const pending = useRef<{ person?: Person; foods?: Dinner['foods'] }>({});
 
-  useEffect(() => { if (dinner) save(dinner); }, [dinner]);
+  useEffect(() => { if (dinner) keep(dinner); }, [dinner]);
 
-  useEffect(() => {
-    const r = joinRoom({ appId: APP_ID, password: `dt-${code}`, relayConfig: { urls: RELAYS, redundancy: RELAYS.length } }, code);
-    room.current = r;
-    const action = r.makeAction<any>('dinner'); // payload is a Dinner (validated by merge)
-    sendRef.current = (d, target) => { action.send(d as any, target ? { target } : undefined); };
-    action.onMessage = (data) => {
-      setDinner((cur) => {
-        if (!cur) return data && (data as Dinner).code === code && (data as Dinner).meta ? merge({ code, meta: (data as Dinner).meta, people: {} }, data as Dinner) : cur;
-        return merge(cur, data as Dinner);
-      });
-    };
-    r.onPeerJoin = (peerId) => {
-      setPeers(Object.keys(r.getPeers()).length);
-      if (latest.current) sendRef.current(latest.current, peerId); // catch the newcomer up
-    };
-    r.onPeerLeave = () => setPeers(Object.keys(r.getPeers()).length);
-    return () => { r.leave(); room.current = null; };
+  const flush = useCallback(async () => {
+    const p = pending.current;
+    if (!p.person && !p.foods) return;
+    setStatus('saving');
+    const results = await Promise.all([
+      p.person ? save(code, 'person', p.person) : true,
+      p.foods ? save(code, 'foods', p.foods) : true,
+    ]);
+    if (results.every(Boolean)) {
+      if (p.person === pending.current.person) delete pending.current.person;
+      if (p.foods === pending.current.foods) delete pending.current.foods;
+      if (p.person) remoteMine.current = p.person.updatedAt;
+      setStatus('saved');
+    } else setStatus('offline');
   }, [code]);
 
-  /** Save my own entry and send it to everyone online. */
+  // Load what's saved online, then keep listening for changes from everyone.
+  useEffect(() => {
+    let stop: (() => void) | undefined;
+    let cancelled = false;
+    listen(code, (msg) => {
+      if (cancelled) return;
+      if (msg.type === 'person') {
+        const person = { ...msg.data, id: msg.pubkey } as Person; // entry belongs to its signer
+        if (msg.pubkey === meId) remoteMine.current = Math.max(remoteMine.current, Number(person.updatedAt) || 0);
+        setDinner((cur) => (cur ? merge(cur, { code, people: { [msg.pubkey]: person } }) : cur));
+      } else {
+        setDinner((cur) => (cur ? merge(cur, { code, foods: msg.data }) : cur));
+      }
+    }, () => {
+      if (cancelled) return;
+      setLoaded(true);
+      setStatus('saved');
+      // Something I changed while offline (or before this version)? Send it now.
+      const mine = latest.current?.people[meId];
+      if (mine && mine.updatedAt > remoteMine.current) { pending.current.person = mine; void flush(); }
+    }).then((s) => { if (cancelled) s(); else stop = s; });
+    return () => { cancelled = true; stop?.(); };
+  }, [code, meId, flush]);
+
+  // Retry unsent changes every 15 s while offline.
+  useEffect(() => {
+    if (status !== 'offline') return;
+    const t = setInterval(() => void flush(), 15000);
+    return () => clearInterval(t);
+  }, [status, flush]);
+
+  /** Save my own choice (here immediately, online in the background). */
   const updateMe = useCallback((patch: Omit<Person, 'id' | 'updatedAt'>) => {
-    setDinner((cur) => {
-      if (!cur) return cur;
-      const next = { ...cur, people: { ...cur.people, [meId]: { ...patch, id: meId, updatedAt: Date.now() } } };
-      sendRef.current(next);
-      return next;
-    });
-  }, [meId]);
+    const person: Person = { ...patch, id: meId, updatedAt: Date.now() };
+    setDinner((cur) => (cur ? { ...cur, people: { ...cur.people, [meId]: person } } : cur));
+    pending.current.person = person;
+    void flush();
+  }, [meId, flush]);
 
-  /** Store the nearby-foods list in the dinner and share it with everyone online. */
+  /** Share the nearby-foods list so friends get it instantly. */
   const setFoods = useCallback((foods: NonNullable<Dinner['foods']>) => {
-    setDinner((cur) => {
-      if (!cur || cur.foods) return cur;
-      const next = { ...cur, foods };
-      sendRef.current(next);
-      return next;
-    });
-  }, []);
+    if (latest.current?.foods) return;
+    setDinner((cur) => (cur && !cur.foods ? { ...cur, foods } : cur));
+    pending.current.foods = foods;
+    void flush();
+  }, [flush]);
 
-  return { dinner, peers, meId, updateMe, setFoods };
+  return { dinner, meId, status, loaded, updateMe, setFoods };
 }

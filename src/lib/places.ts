@@ -56,7 +56,7 @@ async function fromNominatim(lat: number, lng: number, foodId?: string): Promise
   const base = 'https://nominatim.openstreetmap.org/search?format=jsonv2&bounded=1&limit=40&accept-language=en';
   const full = vb(lng - dLng, lat + dLat, lng + dLng, lat - dLat);
   const urls = foodId
-    ? foodById(foodId)!.name.split('|').slice(0, 2).map((t) => `${base}&q=${encodeURIComponent(t)}&viewbox=${full}`)
+    ? foodById(foodId)!.name.split('|').slice(0, 1).map((t) => `${base}&q=${encodeURIComponent(t)}&viewbox=${full}`)
     : [
         `${base}&amenity=restaurant&viewbox=${vb(lng - dLng / 3, lat + dLat / 3, lng + dLng / 3, lat - dLat / 3)}`,
         `${base}&amenity=restaurant&viewbox=${vb(lng - dLng, lat + dLat, lng, lat)}`,
@@ -80,7 +80,7 @@ async function fromPhoton(lat: number, lng: number): Promise<Place[]> {
   let ok = 0;
   for (let i = 0; i < terms.length; i += 3) {
     const batch = await Promise.allSettled(terms.slice(i, i + 3).map(async (q) => {
-      const res = await fetch(`https://photon.komoot.io/api/?q=${q}&bbox=${bbox}&limit=50&osm_tag=amenity:restaurant&osm_tag=amenity:fast_food`, { signal: timeout(10000) });
+      const res = await fetch(`https://photon.komoot.io/api/?q=${q}&bbox=${bbox}&limit=50&osm_tag=amenity:restaurant&osm_tag=amenity:fast_food`, { signal: timeout(7000) });
       if (!res.ok) throw new Error(`Photon ${res.status}`);
       return (await res.json()).features as any[];
     }));
@@ -100,7 +100,7 @@ async function fromPhoton(lat: number, lng: number): Promise<Place[]> {
 
 async function fromOverpass(lat: number, lng: number): Promise<Place[]> {
   const q = `[out:json][timeout:12];nwr["amenity"~"^(restaurant|fast_food|food_court)$"]["name"](around:${RADIUS_KM * 1000},${lat},${lng});out center tags 400;`;
-  const res = await fetch('https://overpass-api.de/api/interpreter', { method: 'POST', body: 'data=' + encodeURIComponent(q), headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, signal: timeout(14000) });
+  const res = await fetch('https://overpass-api.de/api/interpreter', { method: 'POST', body: 'data=' + encodeURIComponent(q), headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, signal: timeout(9000) });
   if (!res.ok) throw new Error(`Overpass ${res.status}`);
   const json = await res.json();
   return (json.elements || []).filter((e: any) => e.tags?.name).map((e: any) => {
@@ -122,12 +122,12 @@ export async function foodsNear(lat: number, lng: number): Promise<FoodsNear> {
 
   const byFood = new Map(FOODS.map((f) => [f.id, new Map<string, Place>()]));
   for (const p of all.values()) for (const id of p.foods) byFood.get(id)!.set(p.id, p);
-  // Foods with few matches get a targeted name search (e.g. "biryani").
-  for (const f of FOODS) {
-    if (byFood.get(f.id)!.size >= 5) continue;
-    try { for (const p of await fromNominatim(lat, lng, f.id)) if (p.distanceKm <= RADIUS_KM && p.foods.includes(f.id)) byFood.get(f.id)!.set(p.id, p); }
-    catch { /* leave it out rather than guess */ }
-  }
+  // A few foods with no match at all get one quick targeted name search (e.g. "shawarma"),
+  // capped so the check stays fast.
+  const missing = FOODS.filter((f) => byFood.get(f.id)!.size === 0).slice(0, 4);
+  await Promise.allSettled(missing.map(async (f) => {
+    for (const p of await fromNominatim(lat, lng, f.id)) if (p.distanceKm <= RADIUS_KM && p.foods.includes(f.id)) byFood.get(f.id)!.set(p.id, p);
+  }));
   const value: FoodsNear = {
     radiusKm: RADIUS_KM,
     restaurantCount: all.size,

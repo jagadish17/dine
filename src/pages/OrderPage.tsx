@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { Link, useLocation, useParams } from 'react-router-dom';
-import { Info, Minus, Plus, Share2, Wifi, X } from 'lucide-react';
+import { Cloud, Info, Minus, Plus, Share2, WifiOff, X } from 'lucide-react';
 import { FOODS } from '../../shared/foods.js';
 import { foodsNear, type FoodsNear } from '../lib/places';
 import { formatINR, metaFromQuery, shareUrl } from '../lib/dinner';
 import { useDinner } from '../hooks/useDinner';
-import { ErrorNote, Logo, ToastProvider, useToast } from '../components/ui';
+import { Logo, ToastProvider, useToast } from '../components/ui';
 import ShareDialog from '../components/ShareDialog';
 import Preferences from '../components/Preferences';
 import FoodSelect from '../components/FoodSelect';
@@ -28,14 +28,13 @@ function Order() {
   const code = (useParams().code || '').toLowerCase();
   const query = new URLSearchParams(useLocation().search);
   const linkMeta = useMemo(() => metaFromQuery(query), [query.toString()]); // eslint-disable-line react-hooks/exhaustive-deps
-  const { dinner, peers, meId, updateMe, setFoods } = useDinner(code, linkMeta);
+  const { dinner, meId, status, loaded, updateMe, setFoods } = useDinner(code, linkMeta);
   const me = dinner?.people[meId];
 
   const [scanned, setScanned] = useState<FoodsNear | null>(null);
   const avail = dinner?.foods ?? scanned;
   const haveShared = !!dinner?.foods;
   const [availErr, setAvailErr] = useState<string | null>(null);
-  const [loadingFoods, setLoadingFoods] = useState(false);
   const [retry, setRetry] = useState(0);
   const [name, setName] = useState('');
   const [rows, setRows] = useState<Row[]>([{ key: 1, dish: '', qty: 1 }]);
@@ -43,24 +42,21 @@ function Order() {
   const [prefilled, setPrefilled] = useState(false);
 
   const lat = dinner?.meta.lat, lng = dinner?.meta.lng;
+  // Foods show instantly (all of them). In the background we check which are within 12 km:
+  // first from the dinner's saved list (found by whoever opened it first), otherwise we look it up.
   useEffect(() => {
-    if (lat == null || lng == null || haveShared) { setLoadingFoods(false); return; }
+    if (lat == null || lng == null || haveShared || !loaded) return;
     let stop = false;
-    setLoadingFoods(true);
-    // Give friends' phones a few seconds to send their list first (saves searching twice).
-    const wait = setTimeout(() => {
-      foodsNear(lat, lng)
-        .then((r) => { if (stop) return; setScanned(r); setAvailErr(null); if (r.foods.length) setFoods(r); })
-        .catch((e) => {
-          if (stop) return;
-          setAvailErr(e.message);
-          retryTimer = setTimeout(() => setRetry((n) => n + 1), 30000); // try again by itself
-        })
-        .finally(() => !stop && setLoadingFoods(false));
-    }, retry === 0 ? 4000 : 0);
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
-    return () => { stop = true; clearTimeout(wait); clearTimeout(retryTimer); };
-  }, [lat, lng, retry, haveShared, setFoods]);
+    foodsNear(lat, lng)
+      .then((r) => { if (stop) return; setScanned(r); setAvailErr(null); if (r.foods.length) setFoods(r); })
+      .catch((e) => {
+        if (stop) return;
+        setAvailErr(e.message);
+        retryTimer = setTimeout(() => setRetry((n) => n + 1), 30000); // try again by itself
+      })
+    return () => { stop = true; clearTimeout(retryTimer); };
+  }, [lat, lng, retry, haveShared, loaded, setFoods]);
 
   // Prefill my saved choice so I can change it.
   useEffect(() => {
@@ -74,12 +70,11 @@ function Order() {
 
   useEffect(() => { if (dinner) document.title = `${dinner.meta.name} · DineTogether`; }, [dinner]);
 
-  // If the map services can't be reached, still let people choose: show every food (count -1 =
-  // "not checked") and say so clearly, while retrying in the background.
-  const fallback = !avail && !!availErr;
-  const groups = useMemo(() => (avail
+  // Until the 12 km check is done, every food is shown (count -1 = "not checked yet"), so nobody waits.
+  const fallback = !avail;
+  const groups = useMemo(() => (avail && avail.foods.length
     ? avail.foods.map((a) => ({ ...a, food: FOODS.find((f) => f.id === a.id)! })).filter((a) => a.food)
-    : fallback ? FOODS.map((food) => ({ id: food.id, count: -1, nearest: [] as { name: string; distanceKm: number }[], food })) : []), [avail, fallback]);
+    : FOODS.map((food) => ({ id: food.id, count: -1, nearest: [] as { name: string; distanceKm: number }[], food }))), [avail]);
   const lines = rows.map((r) => ({ ...r, info: dishInfo(r.dish) }));
   const total = lines.reduce((t, l) => t + (l.info ? l.info.dish.price * l.qty : 0), 0);
   const nameTaken = !!dinner && Object.values(dinner.people).some((p) => p.id !== meId && !p.left && p.name.trim().toLowerCase() === name.trim().toLowerCase());
@@ -118,8 +113,10 @@ function Order() {
         <div className="mx-auto flex h-16 max-w-6xl items-center gap-3 px-4 sm:px-6">
           <Link to="/" aria-label="Start a new dinner"><Logo /></Link>
           <div className="flex-1" />
-          <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium ${peers ? 'bg-[#E6F0E9] text-leaf' : 'bg-cream-deep text-ink-soft'}`} title="People with this dinner open right now">
-            <Wifi className="h-3.5 w-3.5" />{peers ? `${peers + 1} online` : 'Only you online'}
+          <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium ${status === 'saved' ? 'bg-[#E6F0E9] text-leaf' : status === 'offline' ? 'bg-ember-tint text-ember-dark' : 'bg-cream-deep text-ink-soft'}`}
+            title="Choices are saved online, so friends see them even when you're not on the page">
+            {status === 'offline' ? <WifiOff className="h-3.5 w-3.5" /> : status === 'saved' ? <Cloud className="h-3.5 w-3.5" /> : <span className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-current border-t-transparent" />}
+            {status === 'saved' ? 'Saved online' : status === 'saving' ? 'Saving…' : status === 'offline' ? 'Offline · will retry' : 'Loading…'}
           </span>
           <button className="btn-dark px-3.5 py-2 text-sm" onClick={() => setShare(true)} aria-label="Invite friends"><Share2 className="h-4 w-4" /><span className="hidden sm:inline">Invite</span></button>
         </div>
@@ -143,15 +140,17 @@ function Order() {
               <div className="mb-3 flex items-start gap-2.5 rounded-xl bg-ember-tint px-3.5 py-2.5 text-[13px] leading-snug text-[#7A3410]">
                 <Info className="mt-0.5 h-4 w-4 shrink-0" />
                 {fallback ? (
-                  <span>Couldn’t check restaurants near <b>{dinner.meta.area.split(',')[0]}</b> right now (the free map service is busy), so <b>all foods</b> are shown. It retries by itself, and the list narrows to foods <b>within 12 km</b> once it gets through. Prices are approximate.</span>
+                  <span>
+                    {availErr
+                      ? <>Couldn’t check restaurants near <b>{dinner.meta.area.split(',')[0]}</b> yet (the free map service is busy), so <b>all foods</b> are shown. It keeps retrying by itself.</>
+                      : <><span className="mr-1.5 inline-block h-3 w-3 animate-spin rounded-full border-2 border-current border-t-transparent align-[-2px]" />Checking which foods are available <b>within 12 km</b> of <b>{dinner.meta.area.split(',')[0]}</b>… You can choose now; the list narrows when ready.</>}
+                    {' '}Prices are approximate.
+                  </span>
                 ) : (
                   <span>Only foods available <b>within 12 km</b> of <b>{dinner.meta.area.split(',')[0]}</b> are listed{avail ? <> — from {avail.restaurantCount} nearby restaurants (OpenStreetMap).</> : '.'} Prices are approximate.</span>
                 )}
               </div>
 
-              {loadingFoods && groups.length === 0 && <div className="rounded-xl border border-dashed border-line bg-cream/60 px-4 py-4 text-sm text-ink-soft"><span className="mr-2 inline-block h-3 w-3 animate-spin rounded-full border-2 border-ember border-t-transparent align-middle" />Checking restaurants within 12 km… (the first time can take up to a minute)</div>}
-              {availErr && !fallback && <ErrorNote onRetry={() => setRetry((n) => n + 1)}>{availErr}</ErrorNote>}
-              {avail && !fallback && groups.length === 0 && <ErrorNote>No restaurants with these foods were found within 12 km.</ErrorNote>}
 
               {groups.length > 0 && (
                 <div className="space-y-3">

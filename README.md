@@ -10,14 +10,14 @@ The whole app is a static website hosted free on **GitHub Pages**.
 
 | Part | How |
 |---|---|
-| Foods within 12 km | Each phone asks free OpenStreetMap services (Overpass, Photon, Nominatim) for real restaurants within 12 km. The first phone to finish shares the list with everyone, and it's kept on the phone for 24 hours. If the services are busy, all foods are shown with a note, and the app retries by itself. |
-| Sharing choices | Phones in the same dinner find each other through free public Nostr relays, then connect directly (WebRTC, via [Trystero](https://github.com/dmotz/trystero)). Messages are **encrypted with the dinner code**, which only people with the link know. |
-| Saving | Every phone keeps a full copy of the dinner (localStorage), so refreshing loses nothing. When phones reconnect, the newest version of each person's choice wins. |
-| The link | `…/#/g/<code>?n=<name>&a=<area>&lat=…&lng=…` carries the dinner's name and area, so anyone can open it at any time. |
+| Foods within 12 km | All foods show **instantly**. In the background, the first phone checks real restaurants within 12 km using free OpenStreetMap services (Overpass, Photon, Nominatim), then narrows the list and **saves it with the dinner**, so everyone else gets it instantly. |
+| Saving choices | Each person's choice is **saved online** as a signed, encrypted record on several free public Nostr relays (see `src/lib/sync.ts`). Anyone opening the link, **at any time**, loads everyone's latest choices, and new changes arrive live. |
+| Privacy | Records are **AES-GCM encrypted with a key derived from the dinner code**, which is only in the link. Relays see neither the code nor the content. Each phone signs its own record, so nobody can overwrite another person's choice. |
+| Offline | Every phone also keeps a copy (localStorage), so the page opens instantly. Changes made offline are sent automatically once back online. The header shows *Saved online / Saving… / Offline · will retry*. |
+| The link | `…/#/g/<code>?n=<name>&a=<area>&lat=…&lng=…` carries the dinner's name and area. |
 
-**Limits**
-- Choices sync **while people have the page open**. If you choose while nobody else is online, they'll see your choice the next time you're both on the page together.
-- Some strict office networks block the direct phone-to-phone connection. Mobile data and home Wi-Fi work.
+**Notes**
+- Public relays are free community servers. Saved dinners usually stay available for a long time, but there's no guarantee of keeping them forever. That's fine for planning a dinner.
 - Prices are approximate typical prices (edit them in `shared/foods.js`). Zomato has no public API, so its data isn't used.
 
 ## Develop
