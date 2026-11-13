@@ -4,6 +4,9 @@ import { HashRouter, Route, Routes } from 'react-router-dom';
 import './index.css';
 import StartPage from './pages/StartPage';
 import OrderPage from './pages/OrderPage';
+import { keepUpToDate } from './lib/update';
+
+keepUpToDate(); // reload onto the latest version if this is an old cached copy
 
 // Hash links (…/#/g/code) work on GitHub Pages, which has no server to handle other paths.
 ReactDOM.createRoot(document.getElementById('root')!).render(
