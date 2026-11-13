@@ -9,7 +9,7 @@ Plan a group dinner together. Start a dinner, share the link, and everyone picks
 1. **Start a dinner** on the homepage (name + area). You get a **6-letter code**, e.g. `K7M2QX`.
 2. **Share the code or the dinner link**, using the **Share link** button. ⚠️ Don't send the plain homepage: opening it and pressing *Start dinner* creates a new, separate dinner.
 3. Friends open the link, **or** type the code in **"Join a friend's dinner"** on the homepage.
-4. Everyone enters their name, picks food and taps **Submit**. The right-hand panel shows everyone's choices and totals.
+4. Everyone enters their name, picks food and taps **Submit**. Food not in the list? Use **"Can't find your food? Add a custom one"**: type any food, add a note (e.g. "less spicy"), and optionally a price. The right-hand panel shows everyone's choices, notes and totals.
 5. The homepage lists **"Your dinners"**, so you can get back to a dinner later.
 
 ## How it works (no server)

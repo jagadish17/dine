@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { merge, parseJoin, summarize, type Dinner } from './dinner';
+import { CUSTOM_FOOD, merge, parseJoin, summarize, type Dinner } from './dinner';
 
 const meta = { name: 'Friday', area: 'T Nagar', lat: 13, lng: 80, createdAt: 1 };
 const base: Dinner = { code: 'abc', meta, people: {} };
@@ -44,6 +44,23 @@ describe('merge', () => {
     expect(merge(joined, { code: 'abc', meta }).meta).toEqual(meta);
     expect(merge(base, { code: 'abc', meta: { ...meta, name: 'Other' } }).meta?.name).toBe('Friday');
     expect(merge(joined, { code: 'abc', meta: { name: 'x' } as any }).meta).toBeNull();
+  });
+});
+
+describe('custom food with note', () => {
+  const custom = (name: string, price: number, qty: number, note?: string) => ({ foodId: CUSTOM_FOOD, name, price, qty, ...(note !== undefined ? { note } : {}) });
+  it('keeps the note, counts its price, and treats a missing price as ₹0', () => {
+    const p = { id: J, name: 'Jagadish', updatedAt: 2, items: [custom('Kola Urundai', 120, 2, '  less spicy  '), custom('Paya', 0, 1)] };
+    const d = merge(base, { code: 'abc', people: { [J]: p } });
+    expect(d.people[J].items[0]).toEqual({ foodId: CUSTOM_FOOD, name: 'Kola Urundai', price: 120, qty: 2, note: 'less spicy' });
+    expect(d.people[J].items[1].note).toBeUndefined();
+    expect(summarize(d).total).toBe(240);
+  });
+  it('limits note length and drops custom foods without a name', () => {
+    const p = { id: J, name: 'J', updatedAt: 2, items: [custom('X', 10, 1, 'n'.repeat(500)), custom('   ', 10, 1, 'orphan note')] };
+    const items = merge(base, { code: 'abc', people: { [J]: p } }).people[J].items;
+    expect(items).toHaveLength(1);
+    expect(items[0].note).toHaveLength(140);
   });
 });
 

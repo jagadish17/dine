@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { Link, useLocation, useParams } from 'react-router-dom';
-import { Cloud, Info, Minus, Plus, Share2, WifiOff, X } from 'lucide-react';
+import { Cloud, Info, Minus, PenLine, Plus, Share2, WifiOff, X } from 'lucide-react';
 import { FOODS } from '../../shared/foods.js';
 import { foodsNear, type FoodsNear } from '../lib/places';
-import { displayCode, formatINR, metaFromQuery, shareUrl } from '../lib/dinner';
+import { CUSTOM_FOOD, displayCode, formatINR, metaFromQuery, shareUrl } from '../lib/dinner';
 import { useDinner } from '../hooks/useDinner';
 import { Logo, ToastProvider, useToast } from '../components/ui';
 import ShareDialog from '../components/ShareDialog';
@@ -40,6 +40,8 @@ function Order() {
   const [rows, setRows] = useState<Row[]>([{ key: 1, dish: '', qty: 1 }]);
   const [share, setShare] = useState(false);
   const [prefilled, setPrefilled] = useState(false);
+  // "Can't find your food?" — something typed in, with an optional note and approximate price.
+  const [custom, setCustom] = useState({ name: '', note: '', price: '', qty: 1 });
 
   const lat = dinner.meta?.lat, lng = dinner.meta?.lng;
   // Foods show instantly (all of them). In the background we check which are within 12 km:
@@ -63,7 +65,10 @@ function Order() {
     if (prefilled || !loaded && !me) return;
     if (me) {
       setName(me.name);
-      if (me.items.length) setRows(me.items.map((i, k) => ({ key: k + 1, dish: `${i.foodId}|${i.name}`, qty: i.qty })));
+      const listed = me.items.filter((i) => i.foodId !== CUSTOM_FOOD);
+      if (listed.length) setRows(listed.map((i, k) => ({ key: k + 1, dish: `${i.foodId}|${i.name}`, qty: i.qty })));
+      const c = me.items.find((i) => i.foodId === CUSTOM_FOOD);
+      if (c) setCustom({ name: c.name, note: c.note ?? '', price: c.price ? String(c.price) : '', qty: c.qty });
     }
     setPrefilled(true);
   }, [dinner, me, prefilled]);
@@ -76,19 +81,23 @@ function Order() {
     ? avail.foods.map((a) => ({ ...a, food: FOODS.find((f) => f.id === a.id)! })).filter((a) => a.food)
     : FOODS.map((food) => ({ id: food.id, count: -1, nearest: [] as { name: string; distanceKm: number }[], food }))), [avail]);
   const lines = rows.map((r) => ({ ...r, info: dishInfo(r.dish) }));
-  const total = lines.reduce((t, l) => t + (l.info ? l.info.dish.price * l.qty : 0), 0);
+  const customName = custom.name.trim();
+  const customPrice = Math.max(0, Math.min(100000, Number(custom.price) || 0));
+  const total = lines.reduce((t, l) => t + (l.info ? l.info.dish.price * l.qty : 0), 0) + (customName ? customPrice * custom.qty : 0);
   const nameTaken = Object.values(dinner.people).some((p) => p.id !== meId && !p.left && p.name.trim().toLowerCase() === name.trim().toLowerCase());
-  const ready = name.trim() && !nameTaken && lines.some((l) => l.info);
+  const hasFood = lines.some((l) => l.info) || !!customName;
+  const ready = name.trim() && !nameTaken && hasFood;
 
   function submit(e: FormEvent) {
     e.preventDefault();
     if (!ready) return;
-    const merged = new Map<string, { foodId: string; name: string; price: number; qty: number }>();
+    const merged = new Map<string, { foodId: string; name: string; price: number; qty: number; note?: string }>();
     for (const l of lines) if (l.info) {
       const k = `${l.info.food.id}|${l.info.dish.name}`;
       const prev = merged.get(k);
       merged.set(k, { foodId: l.info.food.id, name: l.info.dish.name, price: l.info.dish.price, qty: (prev?.qty ?? 0) + l.qty });
     }
+    if (customName) merged.set(CUSTOM_FOOD, { foodId: CUSTOM_FOOD, name: customName.slice(0, 60), price: customPrice, qty: custom.qty, ...(custom.note.trim() ? { note: custom.note.trim().slice(0, 140) } : {}) });
     updateMe({ name: name.trim().slice(0, 40), items: [...merged.values()] });
     toast(me ? 'Your choice is updated' : 'Added! Now invite your friends');
   }
@@ -200,8 +209,35 @@ function Order() {
               )}
             </div>
 
+            {/* Custom food: for anything not in the list above. */}
+            <div className="rounded-2xl border border-dashed border-ember/40 bg-ember-tint/40 p-4">
+              <div className="flex items-center justify-between gap-2">
+                <p className="flex items-center gap-2 text-sm font-medium"><PenLine className="h-4 w-4 text-ember" />Can’t find your food? Add a custom one</p>
+                {(customName || custom.note) && <button type="button" className="text-xs text-ink-faint hover:text-[#A3341A]" onClick={() => setCustom({ name: '', note: '', price: '', qty: 1 })}>Clear</button>}
+              </div>
+              <div className="mt-3 grid grid-cols-[minmax(0,1fr)_auto] gap-2 sm:grid-cols-[minmax(0,1fr)_120px_auto]">
+                <input className="input col-span-2 sm:col-span-1" value={custom.name} onChange={(e) => setCustom({ ...custom, name: e.target.value })} placeholder="Custom food, e.g. Mutton Kola Urundai" maxLength={60} aria-label="Custom food" />
+                <div className="relative">
+                  <span className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-ink-faint">₹</span>
+                  <input className="input pl-7" type="number" inputMode="decimal" min={0} max={100000} value={custom.price} onChange={(e) => setCustom({ ...custom, price: e.target.value })} placeholder="Price" aria-label="Approximate price (optional)" />
+                </div>
+                <div className="inline-flex h-[50px] items-center justify-center rounded-2xl border border-line bg-white px-1" role="group" aria-label="Custom food quantity">
+                  <button type="button" className="grid h-9 w-9 place-items-center rounded-full hover:bg-cream" onClick={() => setCustom({ ...custom, qty: Math.max(1, custom.qty - 1) })} aria-label="Less custom food"><Minus className="h-4 w-4" /></button>
+                  <span className="w-6 text-center font-semibold tabular-nums">{custom.qty}</span>
+                  <button type="button" className="grid h-9 w-9 place-items-center rounded-full hover:bg-cream" onClick={() => setCustom({ ...custom, qty: Math.min(50, custom.qty + 1) })} aria-label="More custom food"><Plus className="h-4 w-4" /></button>
+                </div>
+              </div>
+              <textarea className="input mt-2 min-h-[72px] resize-y py-2.5" value={custom.note} onChange={(e) => setCustom({ ...custom, note: e.target.value.slice(0, 140) })}
+                placeholder="Note (optional), e.g. less spicy, no onion, from Anjappar" maxLength={140} aria-label="Note for your custom food" />
+              <p className="mt-1.5 flex justify-between gap-3 text-xs text-ink-faint">
+                <span>{customName ? (customPrice ? <>{custom.qty} × ₹{customPrice} = <b className="text-ink-soft">{formatINR(customPrice * custom.qty)}</b></> : 'No price given: it won’t be counted in the total.') : 'Price is optional.'}</span>
+                <span className="tabular-nums">{custom.note.length}/140</span>
+              </p>
+              {custom.note.trim() && !customName && <p className="mt-1 text-xs text-[#A3341A]">Type the custom food name too, so the note goes with it.</p>}
+            </div>
+
             <button className="btn-primary w-full justify-between px-6 py-4 text-base" disabled={!ready}>
-              <span>{me ? 'Update my choice' : 'Submit'}</span>
+              <span>{!name.trim() ? 'Enter your name' : !hasFood ? 'Choose a food or add a custom one' : me ? 'Update my choice' : 'Submit'}</span>
               <span className="tabular-nums">{total > 0 && `~${formatINR(total)}`}</span>
             </button>
           </form>

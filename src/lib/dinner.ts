@@ -1,7 +1,9 @@
 // Dinner data shared between phones. Each person owns exactly one entry (keyed by their own id)
 // and only ever changes that entry, so merging is simple: the newest version of each entry wins.
 
-export interface Item { foodId: string; name: string; price: number; qty: number }
+/** foodId is a FOODS id, or CUSTOM_FOOD for something typed in by the person (price 0 = not given). */
+export interface Item { foodId: string; name: string; price: number; qty: number; note?: string }
+export const CUSTOM_FOOD = 'custom';
 export interface Person { id: string; name: string; items: Item[]; updatedAt: number; left?: boolean }
 export interface Meta { name: string; lat: number; lng: number; area: string; createdAt: number }
 import type { FoodsNear } from './places';
@@ -52,7 +54,8 @@ const sanitize = (p: Person): Person => ({
     name: String(i.name).slice(0, 60),
     price: Math.max(0, Math.min(100000, Number(i.price) || 0)),
     qty: Math.max(1, Math.min(50, Math.round(Number(i.qty) || 1))),
-  })),
+    ...(typeof i.note === 'string' && i.note.trim() ? { note: i.note.trim().slice(0, 140) } : {}),
+  })).filter((i) => i.name.trim()),
 });
 
 export interface Summary {

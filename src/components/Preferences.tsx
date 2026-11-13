@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import { Share2, Users } from 'lucide-react';
-import { formatINR, summarize, type Dinner } from '../lib/dinner';
+import { CUSTOM_FOOD, formatINR, summarize, type Dinner } from '../lib/dinner';
 import { Avatar } from './ui';
 
 /** Right-side panel: who chose what, live, with totals and counts. */
@@ -33,7 +33,16 @@ export default function Preferences({ dinner, meId, onInvite }: { dinner: Dinner
               <Avatar id={p.id} name={p.name} size={32} />
               <div className="min-w-0 flex-1">
                 <p className="font-medium">{p.name}{p.id === meId && <span className="ml-1 text-xs font-normal text-ink-faint">(you)</span>}</p>
-                {p.items.map((i) => <p key={i.name} className="text-sm text-ink-soft">{i.qty}× {i.name}</p>)}
+                {p.items.map((i) => (
+                  <div key={i.foodId + i.name} className="text-sm text-ink-soft">
+                    <p>
+                      {i.qty}× {i.name}
+                      {i.foodId === CUSTOM_FOOD && <span className="ml-1.5 rounded bg-ember-tint px-1.5 py-0.5 align-[1px] text-[10px] font-semibold uppercase tracking-wider text-ember-dark">Custom</span>}
+                      {i.foodId === CUSTOM_FOOD && !i.price && <span className="ml-1.5 text-xs text-ink-faint">· price not given</span>}
+                    </p>
+                    {i.note && <p className="mt-0.5 border-l-2 border-ember/40 pl-2 text-[13px] italic text-ink-faint">“{i.note}”</p>}
+                  </div>
+                ))}
               </div>
               <span key={total} className="flash rounded-md px-1 font-semibold tabular-nums">{formatINR(total)}</span>
             </li>
